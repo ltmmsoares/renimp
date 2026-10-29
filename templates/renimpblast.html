@@ -54,12 +54,12 @@
         </div>
 
         <div class="flex justify-center mt-8">
-            <button onclick="rodarBlast()" 
-                class="bg-blue-600 hover:bg-blue-700 text-white text-lg font-bold py-4 px-12 rounded-full shadow-lg hover:shadow-xl transform hover:-translate-y-1 transition-all duration-200 flex items-center space-x-3">
+            <button id="btn-blast" onclick="rodarBlast()" 
+                class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white text-lg font-bold py-4 px-12 rounded-full shadow-lg hover:shadow-xl transform hover:-translate-y-1 transition-all duration-200 flex items-center space-x-3">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
-                <span>Run BLAST & Generate Tree</span>
+                <span id="btn-texto">Run BLAST & Generate Tree</span>
             </button>
         </div>
 
@@ -84,9 +84,9 @@
         <p>Developed by Leticia Soares &bull; RENIMP </p>
     </footer>
 
-    <!-- INTACT JAVASCRIPT LOGIC -->
+    <!-- UPDATED JAVASCRIPT LOGIC -->
     <script>
-        function rodarBlast() {
+        async function rodarBlast() {
             var sequenciaDigitada = document.getElementById('sequencia').value.trim();
 
             if (sequenciaDigitada === "") {
@@ -94,32 +94,43 @@
                 return;
             }
 
+            var btnBlast = document.getElementById('btn-blast');
+            var btnTexto = document.getElementById('btn-texto');
             var areaResultado = document.getElementById('area-resultado');
             var textoResultado = document.getElementById('texto-resultado');
             
+            btnBlast.disabled = true;
+            btnTexto.innerText = "Running Pipeline...";
             areaResultado.classList.remove('hidden');
             
-            // Smooth scroll to results
             setTimeout(() => {
                 areaResultado.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }, 100);
 
             textoResultado.innerHTML = "<span class='text-white animate-pulse'>Starting bioinformatics pipeline (BLAST + MAFFT + ML Tree)...<br>This may take a few seconds depending on sequence length.</span>";
 
-            fetch('/rodar-script', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ sequencia: sequenciaDigitada })
-            })
-            .then(resposta => resposta.json())
-            .then(dados => {
+            try {
+                const resposta = await fetch('/rodar-script', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ sequencia: sequenciaDigitada })
+                });
+
+                if (!resposta.ok) {
+                    const textoErro = await resposta.text();
+                    throw new Error(`HTTP ${resposta.status} - Server timeout or overload. (${textoErro.slice(0, 120)})`);
+                }
+
+                const dados = await resposta.json();
                 textoResultado.innerHTML = dados.mensagem;
-            })
-            .catch(erro => {
-                textoResultado.innerHTML = "<span class='text-red-400'>Connection error with the server. Is the Python script (servidor_final.py) running in the terminal?</span>";
-            });
+            } catch (erro) {
+                textoResultado.innerHTML = "<span class='text-red-400'>Pipeline execution error: " + erro.message + "<br>Check if Gunicorn timeout is set or if NCBI search took too long.</span>";
+            } finally {
+                btnBlast.disabled = false;
+                btnTexto.innerText = "Run BLAST & Generate Tree";
+            }
         }
     </script>
 </body>
