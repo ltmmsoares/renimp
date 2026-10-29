@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RENIMP - Fish BLAST</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Light Blue Background with Soft Dark Blue Fish Pattern (opacity 0.15) */
+        body {
+            background-color: #e0f2fe; /* Light blue */
+            background-image: url("data:image/svg+xml,%3Csvg width='120' height='120' viewBox='0 0 120 120' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M 30 60 Q 50 40 75 60 Q 50 80 30 60 Z M 75 60 L 95 45 L 95 75 Z' fill='none' stroke='%231e3a8a' stroke-width='1.5' stroke-opacity='0.15'/%3E%3Ccircle cx='45' cy='55' r='1.5' fill='%231e3a8a' fill-opacity='0.15'/%3E%3C/svg%3E");
+        }
+        
+        /* Soft glassmorphism effect for the white container */
+        .painel-flutuante {
+            background-color: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(5px);
+        }
+        
+        /* Custom scrollbar for the dark console screen */
+        .tela-preta::-webkit-scrollbar { height: 8px; }
+        .tela-preta::-webkit-scrollbar-track { background: #1f2937; border-radius: 4px; }
+        .tela-preta::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
+        .tela-preta::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center py-12 px-4 font-sans">
+
+    <!-- HEADER WITH LOGO -->
+    <div class="text-center mb-8">
+        <h1 class="text-6xl font-extrabold text-blue-900 tracking-wider drop-shadow-sm mb-2">
+            RENIMP
+        </h1>
+        <h2 class="text-xl font-medium text-blue-800 tracking-wide">
+            Fish Genomic Search & Phylogeny
+        </h2>
+    </div>
+
+    <!-- CENTRAL PANEL (Form) -->
+    <main class="w-full max-w-4xl painel-flutuante p-8 rounded-2xl shadow-2xl border border-blue-100">
+        
+        <div class="mb-6">
+            <label for="sequencia" class="block text-lg font-bold text-gray-700 mb-2">
+                Enter your FASTA sequence (DNA):
+            </label>
+            <p class="text-sm text-gray-500 mb-4">
+                Paste the DNA sequence below to search the local RENIMP database and generate a Maximum Likelihood (ML) tree with the closest species.
+            </p>
+            
+            <textarea id="sequencia" rows="7" 
+                class="w-full p-4 bg-gray-50 border-2 border-blue-200 rounded-xl font-mono text-sm text-gray-800 shadow-inner focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100 transition-all placeholder-gray-400" 
+                placeholder=">Insert_sequence&#10;ATGCGTACGTACGTACGTACGTACGT..."></textarea>
+        </div>
+
+        <div class="flex justify-center mt-8">
+            <button onclick="rodarBlast()" 
+                class="bg-blue-600 hover:bg-blue-700 text-white text-lg font-bold py-4 px-12 rounded-full shadow-lg hover:shadow-xl transform hover:-translate-y-1 transition-all duration-200 flex items-center space-x-3">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                <span>Run BLAST & Generate Tree</span>
+            </button>
+        </div>
+
+        <!-- RESULTS AREA -->
+        <div id="area-resultado" class="mt-12 hidden transition-all duration-500">
+            <div class="flex items-center space-x-2 mb-4 border-b-2 border-blue-200 pb-2">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <h3 class="text-2xl font-bold text-gray-800">Analysis Results</h3>
+            </div>
+            
+            <!-- Dark Screen for the tree to glow -->
+            <div id="texto-resultado" class="tela-preta bg-gray-900 text-green-400 p-6 rounded-xl shadow-inner font-mono text-sm whitespace-pre-wrap overflow-x-auto border border-gray-700">
+                <!-- Python results will appear here -->
+            </div>
+        </div>
+    </main>
+
+    <!-- Minimalist Footer -->
+    <footer class="mt-12 text-center text-blue-800 opacity-70 text-sm font-medium">
+        <p>Developed by Leticia Soares &bull; RENIMP </p>
+    </footer>
+
+    <!-- INTACT JAVASCRIPT LOGIC -->
+    <script>
+        function rodarBlast() {
+            var sequenciaDigitada = document.getElementById('sequencia').value.trim();
+
+            if (sequenciaDigitada === "") {
+                alert("Please paste a sequence before searching!");
+                return;
+            }
+
+            var areaResultado = document.getElementById('area-resultado');
+            var textoResultado = document.getElementById('texto-resultado');
+            
+            areaResultado.classList.remove('hidden');
+            
+            // Smooth scroll to results
+            setTimeout(() => {
+                areaResultado.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 100);
+
+            textoResultado.innerHTML = "<span class='text-white animate-pulse'>Starting bioinformatics pipeline (BLAST + MAFFT + ML Tree)...<br>This may take a few seconds depending on sequence length.</span>";
+
+            fetch('/rodar-script', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ sequencia: sequenciaDigitada })
+            })
+            .then(resposta => resposta.json())
+            .then(dados => {
+                textoResultado.innerHTML = dados.mensagem;
+            })
+            .catch(erro => {
+                textoResultado.innerHTML = "<span class='text-red-400'>Connection error with the server. Is the Python script (servidor_final.py) running in the terminal?</span>";
+            });
+        }
+    </script>
+</body>
+</html>
