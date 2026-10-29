@@ -26,4 +26,4 @@ COPY . .
 EXPOSE 5000
 
 # Comando para iniciar o servidor usando Gunicorn (recomendado para produção no Render)
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "servidor_final:app", "--timeout", "300"]
+CMD gunicorn --bind 0.0.0.0:${PORT:-5000} --timeout 300 --workers 1 servidor_final:app
