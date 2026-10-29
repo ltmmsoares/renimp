@@ -73,14 +73,23 @@ def rodar_script():
                 })
 
         # =========================================================
-        # 2. ONLINE SEARCH (NCBI 'nt') - Protected against timeout
+        # 2. ONLINE SEARCH (NCBI 'nt') - With 18s Cloud Timeout
         # =========================================================
+        import signal
+
+        def timeout_handler(signum, frame):
+            raise TimeoutError("NCBI queue took too long")
+
         try:
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(18)  # Max 18 seconds waiting for NCBI so Render never times out
+            
             resultado_blast_online = NCBIWWW.qblast(
                 "blastn", "nt", sequencia_limpa,
                 entrez_query="txid7898[ORGN]", hitlist_size=20
             )
             blast_record = NCBIXML.read(resultado_blast_online)
+            signal.alarm(0)  # Disable alarm if NCBI responded in time
             
             if blast_record.alignments:
                 for alignment in blast_record.alignments:
@@ -101,7 +110,8 @@ def rodar_script():
                         'source': 'NCBI'
                     })
         except Exception as e_ncbi:
-            print(f"Warning: NCBI online search skipped or timed out: {e_ncbi}")
+            signal.alarm(0)
+            print(f"Warning: NCBI online search skipped to prevent cloud timeout: {e_ncbi}")
 
         # =========================================================
         # 3. UNIFIED RANKING AND DECISION MAKING
