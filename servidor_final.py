@@ -245,47 +245,72 @@ def rodar_script():
                 break
 
         # =========================================================
-        # 6. DECISION (>= 98% THRESHOLD) AND FISHBASE
+        # 6. DECISION (>= 98% THRESHOLD) AND TIE-BREAKER
         # =========================================================
         query_node = next(c for c in tree.get_terminals() if c.name and "Your_Sequence" in c.name)
-        vizinho_mais_proximo = None
+        vizinhos_mais_proximos = []
         menor_distancia = float('inf')
+        tolerancia = 1e-4  # Margem para considerar empate no comprimento do ramo (IQ-TREE)
 
         for clade in tree.get_terminals():
             if clade != query_node:
                 dist = tree.distance(query_node, clade)
-                if dist < menor_distancia:
+                if dist < menor_distancia - tolerancia:
                     menor_distancia = dist
-                    vizinho_mais_proximo = clade.name
+                    vizinhos_mais_proximos = [clade.name]
+                elif abs(dist - menor_distancia) <= tolerancia:
+                    vizinhos_mais_proximos.append(clade.name)
 
-        nome_terminal_limpo = vizinho_mais_proximo.replace("_R_", "")
-        
-        hit_vencedor = next(
-            (h for h in hits_unicos_final if h['tree_id'] == nome_terminal_limpo),
-            hits_unicos_final[0]
-        )
-        
-        pident_vencedor = hit_vencedor['pident']
-        especie_final = hit_vencedor['especie'].replace('_', ' ')
-        origem_vizinho = "LOCAL (RENIMP Database)" if hit_vencedor['source'] == "LOCAL" else "NCBI (Online)"
+        # Coleta dados de todos os empatados
+        especies_empatadas = []
+        origens_empatadas = []
+        pident_vencedor = 0.0
+
+        for vizinho in vizinhos_mais_proximos:
+            nome_terminal_limpo = vizinho.replace("_R_", "")
+            hit_vencedor = next(
+                (h for h in hits_unicos_final if h['tree_id'] == nome_terminal_limpo),
+                hits_unicos_final[0]
+            )
+            especie_nome = hit_vencedor['especie'].replace('_', ' ')
+            if especie_nome not in especies_empatadas:
+                especies_empatadas.append(especie_nome)
+            
+            origem = "LOCAL (RENIMP Database)" if hit_vencedor['source'] == "LOCAL" else "NCBI (Online)"
+            if origem not in origens_empatadas:
+                origens_empatadas.append(origem)
+            
+            if hit_vencedor['pident'] > pident_vencedor:
+                pident_vencedor = hit_vencedor['pident']
+
+        # Formata o texto final com suporte a empates
+        if len(especies_empatadas) > 1:
+            especie_final_str = " AND ".join(especies_empatadas)
+            origem_final_str = " & ".join(origens_empatadas)
+            alerta_empate = " [TIE IN PHYLOGENY]"
+        else:
+            especie_final_str = especies_empatadas[0]
+            origem_final_str = origens_empatadas[0]
+            alerta_empate = ""
 
         if pident_vencedor >= 98.0:
             decisao_final = (
-                f"[ANALYSIS COMPLETED] - Final Verdict: The identified species is '{especie_final}' "
+                f"[ANALYSIS COMPLETED] - Final Verdict: The identified species is '{especie_final_str}'{alerta_empate} "
                 f"({pident_vencedor:.2f}% identity).\n"
-                f"The algorithm extracted this hit from source: {origem_vizinho}."
+                f"The algorithm extracted this hit from source: {origem_final_str}."
             )
-            relatorio_especie = f"Species: {especie_final} (Confirmed >= 98%)\n"
+            relatorio_especie = f"Species: {especie_final_str} (Confirmed >= 98%)\n"
         else:
             decisao_final = (
                 f"[INCONCLUSIVE VERDICT] - Could not reach a final verdict "
                 f"(highest identity is {pident_vencedor:.2f}%, below the 98.0% threshold).\n"
-                f"Closest evolutionary neighbor in the tree: '{especie_final}' (Source: {origem_vizinho})."
+                f"Closest evolutionary neighbor in the tree: '{especie_final_str}'{alerta_empate} (Source: {origem_final_str})."
             )
-            relatorio_especie = f"Closest Neighbor (Unconfirmed - {pident_vencedor:.2f}%): {especie_final}\n"
+            relatorio_especie = f"Closest Neighbor (Unconfirmed - {pident_vencedor:.2f}%): {especie_final_str}\n"
 
+        # Link do FishBase (usa a primeira espécie em caso de empate)
         try:
-            partes_esp = especie_final.split()
+            partes_esp = especies_empatadas[0].split()
             genero, epiteto = partes_esp[0], partes_esp[1]
             link_fishbase = f"https://www.fishbase.se/summary/SpeciesSummary.php?genusname={genero}&speciesname={epiteto}"
         except Exception:
@@ -294,11 +319,6 @@ def rodar_script():
         for clado in tree.find_clades():
             if clado.name and not clado.is_terminal():
                 clado.name = ""
-
-        out_handle = io.StringIO()
-        Phylo.draw_ascii(tree, file=out_handle)
-        arvore_ascii = out_handle.getvalue()
-
         # =========================================================
         # 7. BUILD VISUAL HTML RESPONSE
         # =========================================================
