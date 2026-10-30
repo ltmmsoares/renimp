@@ -245,76 +245,62 @@ def rodar_script():
                 break
 
         # =========================================================
-        # 6. DECISION (>= 98% THRESHOLD) AND TIE-BREAKER
+        # 6. DECISION (STRICT >= 98% THRESHOLD)
         # =========================================================
-        query_node = next(c for c in tree.get_terminals() if c.name and "Your_Sequence" in c.name)
-        vizinhos_mais_proximos = []
-        menor_distancia = float('inf')
-        tolerancia = 1e-4  # Margem para considerar empate no comprimento do ramo (IQ-TREE)
+        maior_pident_geral = max(h['pident'] for h in hits_unicos_final)
+        link_fishbase = ""
+        bloco_relatorio = ""
 
-        for clade in tree.get_terminals():
-            if clade != query_node:
-                dist = tree.distance(query_node, clade)
-                if dist < menor_distancia - tolerancia:
-                    menor_distancia = dist
-                    vizinhos_mais_proximos = [clade.name]
-                elif abs(dist - menor_distancia) <= tolerancia:
-                    vizinhos_mais_proximos.append(clade.name)
+        if maior_pident_geral >= 98.0:
+            query_node = next(c for c in tree.get_terminals() if c.name and "Your_Sequence" in c.name)
+            vizinho_mais_proximo = None
+            menor_distancia = float('inf')
 
-        # Coleta dados de todos os empatados
-        especies_empatadas = []
-        origens_empatadas = []
-        pident_vencedor = 0.0
+            # Avalia apenas os terminais que atingiram >= 98% de identidade
+            for clade in tree.get_terminals():
+                if clade != query_node:
+                    nome_limpo = clade.name.replace("_R_", "")
+                    hit_cand = next((h for h in hits_unicos_final if h['tree_id'] == nome_limpo), None)
+                    if hit_cand and hit_cand['pident'] >= 98.0:
+                        dist = tree.distance(query_node, clade)
+                        if dist < menor_distancia:
+                            menor_distancia = dist
+                            vizinho_mais_proximo = clade.name
 
-        for vizinho in vizinhos_mais_proximos:
-            nome_terminal_limpo = vizinho.replace("_R_", "")
+            nome_terminal_limpo = vizinho_mais_proximo.replace("_R_", "")
             hit_vencedor = next(
                 (h for h in hits_unicos_final if h['tree_id'] == nome_terminal_limpo),
                 hits_unicos_final[0]
             )
-            especie_nome = hit_vencedor['especie'].replace('_', ' ')
-            if especie_nome not in especies_empatadas:
-                especies_empatadas.append(especie_nome)
             
-            origem = "LOCAL (RENIMP Database)" if hit_vencedor['source'] == "LOCAL" else "NCBI (Online)"
-            if origem not in origens_empatadas:
-                origens_empatadas.append(origem)
-            
-            if hit_vencedor['pident'] > pident_vencedor:
-                pident_vencedor = hit_vencedor['pident']
+            pident_vencedor = hit_vencedor['pident']
+            especie_final = hit_vencedor['especie'].replace('_', ' ')
+            origem_vizinho = "LOCAL (RENIMP Database)" if hit_vencedor['source'] == "LOCAL" else "NCBI (Online)"
 
-        # Formata o texto final com suporte a empates
-        if len(especies_empatadas) > 1:
-            especie_final_str = " AND ".join(especies_empatadas)
-            origem_final_str = " & ".join(origens_empatadas)
-            alerta_empate = " [TIE IN PHYLOGENY]"
-        else:
-            especie_final_str = especies_empatadas[0]
-            origem_final_str = origens_empatadas[0]
-            alerta_empate = ""
-
-        if pident_vencedor >= 98.0:
             decisao_final = (
-                f"[ANALYSIS COMPLETED] - Final Verdict: The identified species is '{especie_final_str}'{alerta_empate} "
+                f"[ANALYSIS COMPLETED] - Final Verdict: The identified species is '{especie_final}' "
                 f"({pident_vencedor:.2f}% identity).\n"
-                f"The algorithm extracted this hit from source: {origem_final_str}."
+                f"The algorithm extracted this hit from source: {origem_vizinho}."
             )
-            relatorio_especie = f"Species: {especie_final_str} (Confirmed >= 98%)\n"
+
+            try:
+                partes_esp = especie_final.split()
+                genero, epiteto = partes_esp[0], partes_esp[1]
+                link_fishbase = f"https://www.fishbase.se/summary/SpeciesSummary.php?genusname={genero}&speciesname={epiteto}"
+            except Exception:
+                link_fishbase = "Invalid name format for FishBase."
+
+            bloco_relatorio = (
+                ">>> BIOLOGICAL REPORT OF THE SPECIES <<<\n"
+                f"Species: {especie_final}\n"
+                f"More details on FishBase: {link_fishbase}\n\n"
+            )
         else:
+            # Se for < 98%, não aponta nenhuma espécie nem gera relatório do FishBase
             decisao_final = (
                 f"[INCONCLUSIVE VERDICT] - Could not reach a final verdict "
-                f"(highest identity is {pident_vencedor:.2f}%, below the 98.0% threshold).\n"
-                f"Closest evolutionary neighbor in the tree: '{especie_final_str}'{alerta_empate} (Source: {origem_final_str})."
+                f"(highest identity is {maior_pident_geral:.2f}%, below the 98.0% threshold)."
             )
-            relatorio_especie = f"Closest Neighbor (Unconfirmed - {pident_vencedor:.2f}%): {especie_final_str}\n"
-
-        # Link do FishBase (usa a primeira espécie em caso de empate)
-        try:
-            partes_esp = especies_empatadas[0].split()
-            genero, epiteto = partes_esp[0], partes_esp[1]
-            link_fishbase = f"https://www.fishbase.se/summary/SpeciesSummary.php?genusname={genero}&speciesname={epiteto}"
-        except Exception:
-            link_fishbase = "Invalid name format for FishBase."
 
         # Omitir rótulos internos na árvore e desenhar ASCII
         for clado in tree.find_clades():
@@ -331,9 +317,7 @@ def rodar_script():
         resposta_final = tabela + "\n"
         resposta_final += ">>> ALGORITHM DIAGNOSTIC (Decision Support) <<<\n"
         resposta_final += decisao_final + "\n\n"
-        resposta_final += ">>> BIOLOGICAL REPORT OF THE SPECIES <<<\n"
-        resposta_final += relatorio_especie
-        resposta_final += f"More details on FishBase: {link_fishbase}\n\n"
+        resposta_final += bloco_relatorio
         resposta_final += ">>> PHYLOGENETIC TREE (IQ-TREE) <<<\n"
         resposta_final += arvore_ascii
 
