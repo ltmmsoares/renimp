@@ -2,6 +2,7 @@ import os
 import subprocess
 import io
 import html
+import signal
 from flask import Flask, render_template, request, jsonify
 from Bio import SeqIO, Phylo, Entrez
 from Bio.Blast import NCBIWWW, NCBIXML
@@ -44,20 +45,26 @@ def rodar_script():
 
         # =========================================================
         # 1. LOCAL SEARCH (RENIMP DATABASE)
+        # Added '-task blastn' and '-evalue 10' to guarantee at least 5 hits
         # =========================================================
         comando_blast = [
-            "blastn", "-query", "query_temp.fasta", "-db", "banco_peixes",
-            "-outfmt", "6 qseqid sseqid pident length evalue", "-max_target_seqs", "20"
+            "blastn", "-task", "blastn", "-query", "query_temp.fasta", "-db", "banco_peixes",
+            "-evalue", "10", "-outfmt", "6 qseqid sseqid pident length evalue", "-max_target_seqs", "50"
         ]
         resultado_blast_local = subprocess.run(comando_blast, capture_output=True, text=True)
         
         if resultado_blast_local.returncode == 0 and resultado_blast_local.stdout.strip():
             linhas_local = resultado_blast_local.stdout.strip().split('\n')
+            ids_locais_vistos = set()
             for linha in linhas_local:
                 colunas = linha.split('\t')
                 if len(colunas) < 5:
                     continue
                 sseqid = colunas[1]
+                if sseqid in ids_locais_vistos:
+                    continue
+                ids_locais_vistos.add(sseqid)
+
                 pident = float(colunas[2])
                 evalue = float(colunas[4])
                 
@@ -75,8 +82,6 @@ def rodar_script():
         # =========================================================
         # 2. ONLINE SEARCH (NCBI 'nt') - With 18s Cloud Timeout
         # =========================================================
-        import signal
-
         def timeout_handler(signum, frame):
             raise TimeoutError("NCBI queue took too long")
 
@@ -86,7 +91,7 @@ def rodar_script():
             
             resultado_blast_online = NCBIWWW.qblast(
                 "blastn", "nt", sequencia_limpa,
-                entrez_query="txid7898[ORGN]", hitlist_size=20
+                entrez_query="txid7898[ORGN]", hitlist_size=30
             )
             blast_record = NCBIXML.read(resultado_blast_online)
             signal.alarm(0)  # Disable alarm if NCBI responded in time
@@ -113,8 +118,11 @@ def rodar_script():
             signal.alarm(0)
             print(f"Warning: NCBI online search skipped to prevent cloud timeout: {e_ncbi}")
 
+        if not hits_combinados:
+            return jsonify({"mensagem": "No results found in any database."})
+
         # =========================================================
-        # 3. UNIFIED RANKING AND DECISION MAKING
+        # 3. UNIFIED RANKING AND DECISION MAKING (MANDATORY 5 HITS)
         # =========================================================
         hits_ordenados = sorted(
             hits_combinados,
@@ -123,29 +131,47 @@ def rodar_script():
 
         hits_unicos_final = []
         especies_vistas = set()
+        ids_escolhidos = set()
 
-        tabela = ">>> UNIFIED BLAST RANKING (Priority: Local RENIMP) <<<\n\n"
-        tabela += f"{'Source':<8} | {'ID / Accession':<22} | {'Identified Species':<25} | {'Identity':<11} | {'E-value':<10}\n"
-        tabela += "-" * 88 + "\n"
-
+        # Step 3.1: Prioritize unique species first
         for h in hits_ordenados:
             if h['especie'] not in especies_vistas:
                 especies_vistas.add(h['especie'])
+                ids_escolhidos.add(h['original_id'])
                 hits_unicos_final.append(h)
-                
-                orig = f"[{h['source']}]"
-                id_str = h['original_id'][:20]
-                esp = h['especie'].replace('_', ' ')[:23]
-                pid = f"{h['pident']:.2f}%"
-                ev = f"{h['evalue']:.2e}" if h['evalue'] < 0.001 else str(h['evalue'])
-                
-                tabela += f"{orig:<8} | {id_str:<22} | {esp:<25} | {pid:<11} | {ev:<10}\n"
-                
-                if len(hits_unicos_final) == 5:  # Limited to Top 5 best unique hits
+                if len(hits_unicos_final) == 5:
                     break
 
-        if not hits_unicos_final:
-            return jsonify({"mensagem": "No results found in any database."})
+        # Step 3.2: If fewer than 5 unique species exist, fill remaining slots with next best hits
+        if len(hits_unicos_final) < 5:
+            for h in hits_ordenados:
+                if h['original_id'] not in ids_escolhidos:
+                    ids_escolhidos.add(h['original_id'])
+                    hits_unicos_final.append(h)
+                    if len(hits_unicos_final) == 5:
+                        break
+
+        # Assign unique terminal names for IQ-TREE in case multiple hits share the same species name
+        contagem_nomes = {}
+        for h in hits_unicos_final:
+            base_name = f"{h['source']}_{h['especie']}"
+            contagem_nomes[base_name] = contagem_nomes.get(base_name, 0) + 1
+            if contagem_nomes[base_name] > 1:
+                h['tree_id'] = f"{base_name}_{contagem_nomes[base_name]}"
+            else:
+                h['tree_id'] = base_name
+
+        tabela = ">>> UNIFIED BLAST RANKING (Priority: Local RENIMP - Top 5 Hits) <<<\n\n"
+        tabela += f"{'Source':<8} | {'ID / Accession':<22} | {'Identified Species':<25} | {'Identity':<11} | {'E-value':<10}\n"
+        tabela += "-" * 88 + "\n"
+
+        for h in hits_unicos_final:
+            orig = f"[{h['source']}]"
+            id_str = h['original_id'][:20]
+            esp = h['especie'].replace('_', ' ')[:23]
+            pid = f"{h['pident']:.2f}%"
+            ev = f"{h['evalue']:.2e}" if h['evalue'] < 0.001 else str(h['evalue'])
+            tabela += f"{orig:<8} | {id_str:<22} | {esp:<25} | {pid:<11} | {ev:<10}\n"
 
         # =========================================================
         # 4. GATHER SEQUENCES FOR THE TREE
@@ -157,10 +183,12 @@ def rodar_script():
         if locais_ids:
             for registro in SeqIO.parse("renimp_database.fasta", "fasta"):
                 if registro.id in locais_ids:
-                    hit = next(h for h in hits_unicos_final if h['original_id'] == registro.id)
-                    registro.id = f"LOCAL_{hit['especie']}"
-                    registro.description = ""
-                    sequencias_para_arvore.append(registro)
+                    for hit in hits_unicos_final:
+                        if hit['source'] == 'LOCAL' and hit['original_id'] == registro.id:
+                            registro.id = hit['tree_id']
+                            registro.description = ""
+                            sequencias_para_arvore.append(registro)
+                            break
 
         # 4.2 Get winners from NCBI
         ncbi_ids = [h["original_id"] for h in hits_unicos_final if h['source'] == 'NCBI']
@@ -174,7 +202,7 @@ def rodar_script():
                     acc_limpo = registro.id.split('.')[0]
                     for hit in hits_unicos_final:
                         if hit['source'] == 'NCBI' and hit['original_id'] == acc_limpo:
-                            registro.id = f"NCBI_{hit['especie']}"
+                            registro.id = hit['tree_id']
                             registro.description = ""
                             sequencias_para_arvore.append(registro)
                             break
@@ -207,9 +235,9 @@ def rodar_script():
 
         # Root with the last sequence in the list (most distant from ranking)
         outgroup_hit = hits_unicos_final[-1]
-        outgroup_prefix = f"{outgroup_hit['source']}_{outgroup_hit['especie']}"
+        outgroup_prefix = outgroup_hit['tree_id']
         for clado in tree.get_terminals():
-            if clado.name and clado.name.startswith(outgroup_prefix):
+            if clado.name and clado.name.replace("_R_", "") == outgroup_prefix:
                 try:
                     tree.root_with_outgroup({"name": clado.name})
                 except Exception:
@@ -217,7 +245,7 @@ def rodar_script():
                 break
 
         # =========================================================
-        # 6. DECISION AND FISHBASE
+        # 6. DECISION (>= 98% THRESHOLD) AND FISHBASE
         # =========================================================
         query_node = next(c for c in tree.get_terminals() if c.name and "Your_Sequence" in c.name)
         vizinho_mais_proximo = None
@@ -230,13 +258,31 @@ def rodar_script():
                     menor_distancia = dist
                     vizinho_mais_proximo = clade.name
 
-        origem_vizinho = "LOCAL (RENIMP Database)" if vizinho_mais_proximo.startswith("LOCAL") else "NCBI (Online)"
+        nome_terminal_limpo = vizinho_mais_proximo.replace("_R_", "")
         
-        nome_limpo = vizinho_mais_proximo.replace("_R_", "").replace("LOCAL_", "").replace("NCBI_", "")
-        especie_final = nome_limpo.replace('_', ' ')
+        hit_vencedor = next(
+            (h for h in hits_unicos_final if h['tree_id'] == nome_terminal_limpo),
+            hits_unicos_final[0]
+        )
+        
+        pident_vencedor = hit_vencedor['pident']
+        especie_final = hit_vencedor['especie'].replace('_', ' ')
+        origem_vizinho = "LOCAL (RENIMP Database)" if hit_vencedor['source'] == "LOCAL" else "NCBI (Online)"
 
-        decisao_final = f"[ANALYSIS COMPLETED] - The closest genetic neighbor is '{especie_final}'.\n"
-        decisao_final += f"The algorithm extracted this hit from source: {origem_vizinho}."
+        if pident_vencedor >= 98.0:
+            decisao_final = (
+                f"[ANALYSIS COMPLETED] - Final Verdict: The identified species is '{especie_final}' "
+                f"({pident_vencedor:.2f}% identity).\n"
+                f"The algorithm extracted this hit from source: {origem_vizinho}."
+            )
+            relatorio_especie = f"Species: {especie_final} (Confirmed >= 98%)\n"
+        else:
+            decisao_final = (
+                f"[INCONCLUSIVE VERDICT] - Could not reach a final verdict "
+                f"(highest identity is {pident_vencedor:.2f}%, below the 98.0% threshold).\n"
+                f"Closest evolutionary neighbor in the tree: '{especie_final}' (Source: {origem_vizinho})."
+            )
+            relatorio_especie = f"Closest Neighbor (Unconfirmed - {pident_vencedor:.2f}%): {especie_final}\n"
 
         try:
             partes_esp = especie_final.split()
@@ -260,7 +306,7 @@ def rodar_script():
         resposta_final += ">>> ALGORITHM DIAGNOSTIC (Decision Support) <<<\n"
         resposta_final += decisao_final + "\n\n"
         resposta_final += ">>> BIOLOGICAL REPORT OF THE SPECIES <<<\n"
-        resposta_final += f"Species: {especie_final}\n"
+        resposta_final += relatorio_especie
         resposta_final += f"More details on FishBase: {link_fishbase}\n\n"
         resposta_final += ">>> PHYLOGENETIC TREE (IQ-TREE) <<<\n"
         resposta_final += arvore_ascii
@@ -278,6 +324,10 @@ def rodar_script():
         resposta_html = resposta_html.replace(
             "[ANALYSIS COMPLETED]",
             "<span style='color: #4ade80; font-weight: bold;'>[ANALYSIS COMPLETED]</span>"
+        )
+        resposta_html = resposta_html.replace(
+            "[INCONCLUSIVE VERDICT]",
+            "<span style='color: #f87171; font-weight: bold;'>[INCONCLUSIVE VERDICT]</span>"
         )
         resposta_html = resposta_html.replace(
             "[LOCAL]",
