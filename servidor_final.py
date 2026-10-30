@@ -316,9 +316,15 @@ def rodar_script():
         except Exception:
             link_fishbase = "Invalid name format for FishBase."
 
+        # Omitir rótulos internos na árvore e desenhar ASCII
         for clado in tree.find_clades():
             if clado.name and not clado.is_terminal():
                 clado.name = ""
+        
+        out_handle = io.StringIO()
+        Phylo.draw_ascii(tree, file=out_handle)
+        arvore_ascii = out_handle.getvalue()
+
         # =========================================================
         # 7. BUILD VISUAL HTML RESPONSE
         # =========================================================
